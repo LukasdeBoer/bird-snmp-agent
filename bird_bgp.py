@@ -97,8 +97,7 @@ if __name__ == '__main__':
         AgentX(
             callbacks,
             Name='bird-bgp',
-            MIBFile=os.environ.get(
-                "BGPMIBFILE") or "/var/lib/mibs/ietf/BGP4-MIB",
+            MIBFile=os.environ.get("BGPMIBFILE") or "/usr/local/bird-snmp-agent/mibs/BGP4-MIB.txt",
             RootOID='BGP4-MIB::bgp',  # https://tools.ietf.org/html/draft-ietf-idr-bgp4-mib-06
             CacheInterval=int(os.environ.get("AGENTCACHEINTERVAL") or "30")
         )

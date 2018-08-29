@@ -30,7 +30,7 @@ import dateutil.parser
 from datetime import datetime
 import pytz
 from tzlocal import get_localzone
-
+import functools
 
 class BirdAgent(object):
 
@@ -77,6 +77,17 @@ class BirdAgent(object):
         "bgpPeerKeepAliveConfigured": re.compile("^\s+Keepalive timer:\s+[0-9]+\/([0-9]+)$"),
         "bgpPeerLastError": re.compile("^\s+Last error:\s+([a-zA-Z0-9-_\ ]+)$")}
     _re_birdcli_bgp_end = re.compile("^$")
+
+    _re_birdcli_ospf_routerid = re.compile("^Router ID is\s+([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)$")
+    _re_birdcli_ospf_proto_status = re.compile("^.+?\s+OSPF\s+.+?\s+(.+?)\s+(\d\d\d\d-\d\d-\d\d\s\d\d:\d\d:\d\d)\s+(.+?)$")
+    _re_birdcli_ospf_area = re.compile("^\s+Area:\s+([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\s+\([0-9]+\)(.+?)?$")
+    _re_birdcli_ospf_interfaces = re.compile("^Interface\s+(.+?)\s+\(.+?\)$")
+    _re_birdcli_ospf_interface = {
+        "state": re.compile("^\s+State:\s+([a-zA-Z]+)$"),
+        "ipaddress": re.compile("^Interface\s+.+?\s+\((.+?)\)$"),
+        "area": re.compile("^\s+Area:\s+([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\s+\([0-9]+\)(.+?)?$")
+    }
+    _re_birdcli_ospf_neighbor = re.compile("^([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\s+([0-9]+)\s+(\S+)\s+(\S+)\s+(\S+)\s+([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)")
 
     _re_ss = re.compile(
         "^[0-9]+\s+[0-9]+\s+([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)(?:%[a-z0-9-\.]+)?:([0-9]+)\s+([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)(?:%[a-z0-9-\.]+?)?:([0-9]+)")
@@ -354,3 +365,165 @@ class BirdAgent(object):
             state["bgp-peers"][proto]["bgpPeerRemotePort"] = int(dstport)
 
         return state
+
+    def ospfState2int(self, state):
+        if state.lower().startswith("full"):
+            return 8
+        elif state.lower().startswith("loading"):
+            return 7
+        elif state.lower().startswith("exchange"):
+            return 6
+        elif state.lower().startswith("exstart"):
+            return 5
+        elif state.lower().startswith("2-way"):
+            return 4
+        elif state.lower().startswith("init"):
+            return 3
+        elif state.lower().startswith("attempt"):
+            return 2
+        elif state.lower().startswith("down"):
+            return 1
+        else:
+            return 1
+
+    def getOSPFGeneralInfo(self, ospf_instance):
+        """
+        fetch OSPF general information from:
+        * parsing `birdc show status` output
+        * parsing `birdc show proto $ospf_instance` output
+        """
+        general_info = {}
+
+        birdc = subprocess.Popen([self.birdcli, "show", "status"], stdout=subprocess.PIPE)
+        output = birdc.communicate()[0].decode('utf-8', 'ignore')
+        if birdc.returncode != 0:
+            print("ERROR: bird-CLI (querying ospf) %s failed: %i" % (self.birdcli, birdc.returncode))
+
+        for line in output.split("\n"):
+            match = self._re_birdcli_ospf_routerid.search(line)
+            if match:
+                general_info["router_id"] = match.groups()[0]
+
+
+        # get ospf protocol info
+        birdc = subprocess.Popen([self.birdcli, "show", "proto", ospf_instance], stdout=subprocess.PIPE)
+        output = birdc.communicate()[0].decode('utf-8', 'ignore')
+        if birdc.returncode != 0:
+            print("ERROR: bird-CLI (querying proto ospf) %s failed: %i" % (self.birdcli, birdc.returncode))
+
+        for line in output.split("\n"):
+            match = self._re_birdcli_ospf_proto_status.search(line)
+            if match:
+                admin_state, since, state = match.groups()
+                general_info["admin_state"] = "enabled" if admin_state == "up" else "disabled"
+                general_info["up_since"] = since
+                general_info["state"] = state
+
+        return general_info
+
+    def getOSPFAreas(self, ospf_instance):
+        """
+        fetch OSPF general information from:
+        * parsing `birdc show ospf $ospf_instance` output
+        """
+        areas = []
+
+        birdc = subprocess.Popen([self.birdcli, "show", "ospf", ospf_instance], stdout=subprocess.PIPE)
+        output = birdc.communicate()[0].decode('utf-8', 'ignore')
+        if birdc.returncode != 0:
+            print("ERROR: bird-CLI (querying ospf areas) %s failed: %i" % (self.birdcli, birdc.returncode))
+
+        for line in output.split("\n"):
+            match = self._re_birdcli_ospf_area.search(line)
+            if match:
+                area = {}
+                area["area_id"] = match.groups()[0]
+                areas.append(area)
+
+        return areas
+
+    def getOSPFInterfaces(self, ospf_instance):
+        """
+        fetch OSPF general information from:
+        * parsing `birdc show ospf interface $ospf_instance` output
+        """
+        interfaces = []
+
+        birdc = subprocess.Popen([self.birdcli, "show", "ospf", "interface", ospf_instance], stdout=subprocess.PIPE)
+        output = birdc.communicate()[0].decode('utf-8', 'ignore')
+        if birdc.returncode != 0:
+            print("ERROR: bird-CLI (querying ospf interfaces) %s failed: %i" % (self.birdcli, birdc.returncode))
+
+        # create a list of all interfaces
+        for line in output.split("\n"):
+            match = self._re_birdcli_ospf_interfaces.search(line)
+            if match:
+                interface = {}
+                interface["interface_name"] = match.groups()[0]
+                interfaces.append(interface)
+
+        # get detail information
+        for interface in interfaces:
+            birdc = subprocess.Popen([self.birdcli, "show", "ospf", "interface", ospf_instance, "\"%s\""%interface["interface_name"]], stdout=subprocess.PIPE)
+            output = birdc.communicate()[0].decode('utf-8', 'ignore')
+            if birdc.returncode != 0:
+                print("ERROR: bird-CLI (querying ospf interfaces) %s failed: %i" % (self.birdcli, birdc.returncode))
+
+            for line in output.split("\n"):
+                matchipaddress = self._re_birdcli_ospf_interface["ipaddress"].search(line)
+                if matchipaddress:
+                    interface["ipaddress"] = matchipaddress.groups()[0].split('/', 1)[0]
+
+                matcharea = self._re_birdcli_ospf_interface["area"].search(line)
+                if matcharea:
+                    interface["area"] = matcharea.groups()[0]
+
+                matchstate = self._re_birdcli_ospf_interface["state"].search(line)
+                if matchstate:
+                    interface["state"] = matchstate.groups()[0]
+
+        return interfaces
+
+
+    def getOSPFNeighbors(self, ospf_instance):
+        """
+        fetch OSPF-neighbors from:
+        * parsing `birdc show ospf neighbors $ospf_instance` output
+        """
+
+        # "with"-context-manager for Popen not available in python < 3.2
+        birdc = subprocess.Popen([self.birdcli, "show", "ospf", "neighbors", ospf_instance], stdout=subprocess.PIPE)
+        output = birdc.communicate()[0].decode('utf-8', 'ignore')
+        if birdc.returncode != 0:
+            print("ERROR: bird-CLI (querying ospf neighbors) %s failed: %i" % (self.birdcli, birdc.returncode))
+
+        neighbors = {}
+        for line in output.split("\n"):
+            match = self._re_birdcli_ospf_neighbor.search(line)
+            if match:
+                rtrid, pri, state, deadtime, iface, rtrip = match.groups()
+                neighbors[rtrid] = {}
+                neighbors[rtrid]["pri"] = int(pri)
+                neighbors[rtrid]["state"] = self.ospfState2int(state)
+                neighbors[rtrid]["deadtime"] = deadtime
+                neighbors[rtrid]["iface"] = iface
+                neighbors[rtrid]["rtrip"] = rtrip
+
+        # ip-sorted neighbors
+        neighbors_sorted = []
+        for nbrid in sorted(neighbors.keys(), key=functools.cmp_to_key(self.ipCompare)):
+            neighbors_sorted.append((nbrid, neighbors[nbrid]))
+
+        return neighbors_sorted
+
+    def getOSPFState(self, ospf_instance):
+        """
+        fetch OSPF state information
+        """
+        ospf_state = {}
+        ospf_state["general_info"] = self.getOSPFGeneralInfo(ospf_instance)
+        ospf_state["areas"] = self.getOSPFAreas(ospf_instance)
+        ospf_state["interfaces"] = self.getOSPFInterfaces(ospf_instance)
+        ospf_state["neighbors"] = self.getOSPFNeighbors(ospf_instance)
+
+        return ospf_state

@@ -3,6 +3,7 @@
 Based on https://github.com/carosio/bird-snmp-agent
 
 Forked by Mike Nowak (https://github.com/mikenowak)
+Forked by Lukas de Boer
 
 ### What?
 
@@ -38,7 +39,7 @@ Add the following line to `snmpd.conf`:
 
 ```
 master	agentx
-agentxperms 0770 0770 root snmp # if you intend to run this as an unprivileged user
+agentxperms 0770 0770 root Debian-snmp # if you intend to run this as an unprivileged user
 ```
 
 ### Set bird's timestamp to iso8601 long
@@ -75,35 +76,60 @@ The script takes the following environment variables:
 * BIRDCONF           path to bird.conf (defaults to '/etc/bird/bird.conf')
 * BIRDCLI            name of birdcli exacutable (defaults to '/usr/sbin/birdc')
 * SSCMD              ss command syntax (defaults to "ss -tan -o state established '( dport = :bgp or sport = :bgp )'")
-* BGPMIBFILE         location of the BGP-MIB4 file (defaults to '/var/lib/mibs/ietf/BGP4-MIB')
+* BGPMIBFILE         location of the BGP-MIB4 file (defaults to '/usr/local/bird-snmp-agent/mibs/BGP4-MIB.txt')
+* OSPFMIBFILE        location of the OSPF-MIB file (defaults to '/usr/local/bird-snmp-agent/mibs/OSPF-MIB.txt')
+* OSPF_INSTANCE		 the name of your ospf instance in bird
 * AGENTCACHEINTERVAL how long to keep results cached in seconds (defaults to '30')
 
 
 ## SystemD Unit File
 
+Ubuntu 18.04 ready.
+
+bird-snmp-agent-bgp.service:
 ```
 [Unit]
-Description=BIRD SNMP Agent
-After=snmp.service
+Description=BIRD SNMP Agent BGP
+After=snmpd.service
+
 [Service]
 PermissionsStartOnly = true
-User = snmp
-Group = snmp
-WorkingDirectory = /usr/local/bird-snmp-agent
-ExecStart = /usr/bin/env python3 /usr/local/bird-snmp-agent/bird_bgp.py
-ExecReload = /bin/kill -s HUP $MAINPID
-ExecStop = /bin/kill -s TERM $MAINPID
-PrivateTmp = true
+User=Debian-snmp
+Group=Debian-snmp
+WorkingDirectory=/usr/local/bird-snmp-agent
+ExecStart=/usr/bin/python3 /usr/local/bird-snmp-agent/bird_bgp.py
+ExecReload=/bin/kill -s HUP $MAINPID
+ExecStop=/bin/kill -s TERM $MAINPID
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-NB1: The `snmp` user needs to be a member of the `bird` group in order to query bird.
+bird-snmp-agent-ospf.service:
+```
+[Unit]
+Description=BIRD SNMP Agent OSPF
+After=snmpd.service
+
+[Service]
+PermissionsStartOnly = true
+User=Debian-snmp
+Group=Debian-snmp
+WorkingDirectory=/usr/local/bird-snmp-agent
+ExecStart=/usr/bin/python3 /usr/local/bird-snmp-agent/bird_ospf.py
+ExecReload=/bin/kill -s HUP $MAINPID
+ExecStop=/bin/kill -s TERM $MAINPID
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+```
+NB1: The `Debian-snmp` user needs to be a member of the `bird` group in order to query bird. (`adduser Debian-snmp bird`)
 
 NB2: If you decide to run the script as a non-provileged user the following are also needed:
 
 ```
-chgrp snmp /var/agentx
+chgrp Debian-snmp /var/agentx
 chmod 0750 /var/agentx
 ```
